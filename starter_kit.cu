@@ -68,7 +68,7 @@
 #include <pybind11/stl.h>
 
 namespace py = pybind11;
-#endif
+#endif // !defined(STARTER_KIT_TEST)
 
 using cell_idx_t = std::uint32_t;
 
@@ -419,7 +419,7 @@ static py::array python_matmul_typed(py::buffer_info const& buffer_a, py::buffer
     } else if constexpr (backend_kind == backend_t::cuda_k) {
 #if defined(__NVCC__)
 
-        // Now allocate enough managed memory for all 3 matrices, and asyncronously copy them to the GPU,
+        // Now allocate enough managed memory for all 3 matrices, and asynchronously copy them to the GPU,
         // using the 2D `memcpy2DAsync` function, which is more efficient than `memcpy` for large matrices.
         //
         // https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__MEMORY.html

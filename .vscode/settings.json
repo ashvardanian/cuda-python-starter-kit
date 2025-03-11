@@ -94,11 +94,14 @@
         "astype",
         "CCCL",
         "CUDA",
-        "cupy",
+        "CuPy",
         "dtype",
+        "GPGPU",
+        "MatMul",
         "ndarray",
         "njit",
-        "numba",
-        "openmp"
+        "Numba",
+        "OpenMP",
+        "Vardanian"
     ]
 }
