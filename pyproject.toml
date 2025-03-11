@@ -16,5 +16,5 @@ urls = { Homepage = "https://github.com/ashvardanian/cuda-python-starter-kit" }
 dependencies = ["pybind11", "numpy", "numba"]
 
 [project.optional-dependencies]
-cpu = ["pytest", "pytest-repeat", "perfplot"]
-gpu = ["cupy-cuda12x", "pycuda", "pytest", "pytest-repeat", "perfplot"]
+cpu = ["pytest", "pytest-repeat", "pytest-benchmark"]
+gpu = ["cupy-cuda12x", "pycuda", "pytest", "pytest-repeat", "pytest-benchmark"]

@@ -1,68 +1,79 @@
+#!/usr/bin/env python3
+"""
+Benchmark tests for the CUDA & OpenMP Starter Kit using "pytest-benchmark".
+
+This module defines benchmarks for reduction and matrix multiplication operations
+using parameterized kernels. The available kernels (baseline, OpenMP, and CUDA)
+are collected in lists and then each benchmark test is parameterized over the kernel,
+data type, and input size (and tile size for matrix multiplication).
+
+Usage:
+    uv run pytest --benchmark-enable bench.py
+"""
+
 import numpy as np
-import perfplot
+import pytest
 
-from starter_kit_baseline import matmul as matmul_baseline, reduce as reduce_baseline
-from starter_kit import (
-    reduce_openmp,
-    reduce_cuda,
-    matmul_openmp,
-    matmul_cuda,
-    supports_cuda,
-)
+from starter_kit_baseline import reduce as reduce_baseline, matmul as matmul_baseline
+from starter_kit import reduce_openmp, reduce_cuda, matmul_openmp, matmul_cuda, supports_cuda
 
+# Build lists of (name, kernel_function) for reduction and matrix multiplication.
+REDUCTION_KERNELS = [
+    ("baseline", reduce_baseline),
+    ("openmp", reduce_openmp),
+]
+if supports_cuda():
+    REDUCTION_KERNELS.append(("cuda", reduce_cuda))
 
-# Set up the `perfplot` for the reduce operation
-def run_perfplot_reduce(dtype=np.float32):
-    labels = ["reduce_baseline", "reduce_openmp"]
-    kernels = [reduce_baseline, reduce_openmp]
-    if supports_cuda():
-        kernels.append(reduce_cuda)
-        labels.append("reduce_cuda")
-
-    result = perfplot.bench(
-        setup=lambda n: (np.random.rand(n) * 100).astype(dtype),
-        kernels=kernels,
-        labels=labels,
-        n_range=[2**i for i in range(10, 20)],
-        flops=lambda n: n,
-        xlabel="Input Size",
-        equality_check=np.allclose,
-        target_time_per_measurement=0.1,
-    )
-
-    result.save(f"reduce_{dtype.__name__}.png", transparent=True, bbox_inches="tight")
+MATMUL_KERNELS = [
+    ("baseline", matmul_baseline),
+    ("openmp", matmul_openmp),
+]
+if supports_cuda():
+    MATMUL_KERNELS.append(("cuda", matmul_cuda))
 
 
-# Set up the `perfplot` for the matrix multiplication operation
-def run_perfplot_matmul(dtype=np.float32, tile_sizes: list = [4, 8, 16, 32, 64]):
+@pytest.mark.parametrize("dtype", [np.float32, np.int32])
+@pytest.mark.parametrize("n", [2**i for i in range(10, 20)])
+@pytest.mark.parametrize("kernel_name,kernel_func", REDUCTION_KERNELS)
+def test_reduce(benchmark, dtype, n, kernel_name, kernel_func):
+    """
+    Benchmark a reduction kernel.
 
-    labels = []
-    kernels = []
-    for tile_size in tile_sizes:
-        labels.append(f"matmul_baseline_{tile_size}")
-        kernels.append(lambda data: matmul_baseline(data, data, tile_size=tile_size))
-        labels.append(f"matmul_openmp_{tile_size}")
-        kernels.append(lambda data: matmul_openmp(data, data, tile_size=tile_size))
-        if supports_cuda():
-            labels.append(f"matmul_cuda_{tile_size}")
-            kernels.append(lambda data: matmul_cuda(data, data, tile_size=tile_size))
+    Parameters:
+        dtype (np.dtype): Data type for the input array.
+        n (int): Size of the input array.
+        kernel_name (str): Name of the kernel (baseline, openmp, cuda).
+        kernel_func (function): The reduction function to benchmark.
 
-    result = perfplot.bench(
-        setup=lambda n: (np.random.rand(n, n) * 100).astype(dtype),
-        kernels=kernels,
-        labels=labels,
-        n_range=[2**i for i in range(6, 11)],
-        flops=lambda n: n**3,
-        xlabel="Matrix Side",
-        equality_check=np.allclose,
-        target_time_per_measurement=0.1,
-    )
+    The test generates a random 1D array of size n, converts it to the given dtype,
+    and then benchmarks the provided reduction kernel.
+    """
+    data = (np.random.rand(n) * 100).astype(dtype)
 
-    result.save(f"matmul_{dtype.__name__}.png", transparent=True, bbox_inches="tight")
+    # Wrap the kernel call in a lambda to delay execution until benchmarking.
+    benchmark(lambda: kernel_func(data))
 
 
-if __name__ == "__main__":
-    run_perfplot_reduce(np.float32)
-    run_perfplot_reduce(np.int32)
-    run_perfplot_matmul(np.float32)
-    run_perfplot_matmul(np.int32)
+@pytest.mark.parametrize("dtype", [np.float32, np.int32])
+@pytest.mark.parametrize("n", [2**i for i in range(6, 11)])
+@pytest.mark.parametrize("tile_size", [4, 8, 16, 32])
+@pytest.mark.parametrize("kernel_name,kernel_func", MATMUL_KERNELS)
+def test_matmul(benchmark, dtype, n, tile_size, kernel_name, kernel_func):
+    """
+    Benchmark a matrix multiplication kernel.
+
+    Parameters:
+        dtype (np.dtype): Data type for the input matrices.
+        n (int): Dimension of the square matrices.
+        tile_size (int): Tile size to use for the multiplication kernel.
+        kernel_name (str): Name of the kernel (baseline, openmp, cuda).
+        kernel_func (function): The matrix multiplication function to benchmark.
+
+    The test generates a random n x n matrix (used as both input matrices) and benchmarks
+    the provided kernel using the specified tile size.
+    """
+    a = (np.random.rand(n, n) * 100).astype(dtype)
+
+    # Wrap the kernel call in a lambda.
+    benchmark(lambda: kernel_func(a, a, tile_size=tile_size))

@@ -103,7 +103,7 @@ class BuildExt(build_ext):
         )
 
     def compile_cuda(self, source):
-        # Compile CUDA source file using nvcc
+        # Compile CUDA source file using NVCC
         ext = self.extensions[0]
         output_dir = self.build_temp
         os.makedirs(output_dir, exist_ok=True)
