@@ -25,7 +25,15 @@ git clone https://github.com/ashvardanian/cpp-cuda-python-starter-kit.git
 cd cpp-cuda-python-starter-kit
 ```
 
-Once pulled down, you can build the project with:
+Once pulled down, you can build and run the project with `uv`:
+
+```bash
+git submodule update --init --recursive     # fetch CCCL libraries
+uv pip install -e .[gpu]                    # or `.[cpu]` for non-CUDA devices
+uv run pytest test.py -s -x                 # build and test until first failure
+```
+
+Or using a conventional Python environment and dependency management tooling:
 
 ```bash
 git submodule update --init --recursive     # fetch CCCL libraries

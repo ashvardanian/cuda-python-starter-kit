@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=42", "wheel", "pybind11", "numpy"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cuda-python-starter-kit"
+version = "0.2.0"
+description = "Starter Kit project for CUDA- and OpenMP-accelerated Python projects."
+readme = "README.md"
+requires-python = ">=3.7"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Ash Vardanian", email = "1983160+ashvardanian@users.noreply.github.com" },
+]
+urls = { Homepage = "https://github.com/ashvardanian/cuda-python-starter-kit" }
+dependencies = ["pybind11", "numpy", "numba"]
+
+[project.optional-dependencies]
+cpu = ["pytest", "pytest-repeat", "perfplot"]
+gpu = ["cupy-cuda12x", "pycuda", "pytest", "pytest-repeat", "perfplot"]
