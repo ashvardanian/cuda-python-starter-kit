@@ -495,8 +495,7 @@ static py::array python_matmul_typed(py::buffer_info const& buffer_a, py::buffer
         case 8: kernel = &cuda_matmul_kernel<scalar_type, 8>; break;
         case 16: kernel = &cuda_matmul_kernel<scalar_type, 16>; break;
         case 32: kernel = &cuda_matmul_kernel<scalar_type, 32>; break;
-        case 64: kernel = &cuda_matmul_kernel<scalar_type, 64>; break;
-        default: throw std::runtime_error("Unsupported tile size - choose from 4, 8, 16, 32, and 64");
+        default: throw std::runtime_error("Unsupported tile size - choose from 4, 8, 16, and 32");
         }
 
         kernel<<<grid_size, block_size>>>(ptr_a_cuda, ptr_b_cuda, ptr_c_cuda, num_rows_a, num_cols_b, num_cols_a,
