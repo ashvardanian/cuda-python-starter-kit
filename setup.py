@@ -132,7 +132,7 @@ class BuildExt(build_ext):
             raise RuntimeError(f"nvcc compilation of {source} failed")
 
 
-__version__ = "0.0.1"
+__version__ = open("VERSION", "r").read().strip()
 
 long_description = ""
 this_directory = os.path.abspath(os.path.dirname(__file__))
@@ -175,7 +175,7 @@ ext_modules = [
 ]
 
 setup(
-    name="starter_kit",
+    name="cuda-python-starter-kit",
     version=__version__,
     author="Ash Vardanian",
     author_email="1983160+ashvardanian@users.noreply.github.com",
