@@ -175,11 +175,11 @@ ext_modules = [
 ]
 
 setup(
-    name="cuda-python-starter-kit",
+    name="PyBindToGPUs",
     version=__version__,
     author="Ash Vardanian",
     author_email="1983160+ashvardanian@users.noreply.github.com",
-    url="https://github.com/ashvardanian/cuda-python-starter-kit",
+    url="https://github.com/ashvardanian/PyBindToGPUs",
     description="Starter Kit project for CUDA- and OpenMP-accelerated Python projects.",
     long_description=long_description,
     ext_modules=ext_modules,

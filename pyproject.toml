@@ -3,7 +3,7 @@ requires = ["setuptools>=42", "wheel", "pybind11", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cuda-python-starter-kit"
+name = "PyBindToGPUs"
 version = "0.2.0"
 description = "Starter Kit project for CUDA- and OpenMP-accelerated Python projects."
 readme = "README.md"
@@ -12,7 +12,7 @@ license = { file = "LICENSE" }
 authors = [
     { name = "Ash Vardanian", email = "1983160+ashvardanian@users.noreply.github.com" },
 ]
-urls = { Homepage = "https://github.com/ashvardanian/cuda-python-starter-kit" }
+urls = { Homepage = "https://github.com/ashvardanian/PyBindToGPUs" }
 dependencies = ["pybind11", "numpy", "numba"]
 
 [project.optional-dependencies]

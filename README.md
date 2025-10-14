@@ -21,8 +21,8 @@ The `.clang-format` is configured with LLVM base style, adjusted for wider scree
 I'd recommend forking the repository for your own projects, but you can also clone it directly:
 
 ```bash
-git clone https://github.com/ashvardanian/cpp-cuda-python-starter-kit.git
-cd cpp-cuda-python-starter-kit
+git clone https://github.com/ashvardanian/PyBindToGPUs.git
+cd PyBindToGPUs
 ```
 
 Once pulled down, you can build and run the project with `uv`:
