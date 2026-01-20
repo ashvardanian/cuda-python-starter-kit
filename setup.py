@@ -113,25 +113,18 @@ class BuildExt(build_ext):
         output_dir = self.build_temp
         os.makedirs(output_dir, exist_ok=True)
         
-        # Only include CUDA-related headers for device compilation
-        cuda_include_dirs = [
-            "/usr/local/cuda/include/",
-            "/usr/include/cuda/",
-            "cccl/cub/",
-            "cccl/libcudacxx/include",
-            "cccl/thrust/",
-        ]
+        # Include all directories: CUDA headers, PyBind11, NumPy, Python, CCCL
         # Filter to only existing directories
-        cuda_include_dirs = [d for d in cuda_include_dirs if os.path.exists(d)]
+        include_dirs = [d for d in ext.include_dirs if os.path.exists(d)]
         print(f"\n{'='*70}")
-        print(f"CUDA Include Directories Found:")
-        for d in cuda_include_dirs:
+        print(f"Include Directories for NVCC:")
+        for d in include_dirs:
             print(f"  - {d}")
-        if not cuda_include_dirs:
-            print("  ⚠ WARNING: No CUDA include directories found!")
+        if not include_dirs:
+            print("  * WARNING: No include directories found!")
         print(f"{'='*70}\n")
         
-        cuda_include_dirs_str = " ".join(f"-I{dir}" for dir in cuda_include_dirs)
+        cuda_include_dirs_str = " ".join(f"-I{dir}" for dir in include_dirs)
         output_file = os.path.join(output_dir, "starter_kit.o")
 
         # Let's try inferring the compute capability from the GPU
