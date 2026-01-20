@@ -29,15 +29,29 @@ class BuildExt(build_ext):
                 super().build_extension(ext)
 
     def build_cuda_extension(self, ext):
-        # Compile CUDA source files
+        # Step 1: Compile CUDA kernels with NVCC (device code only)
         for source in ext.sources:
             if source.endswith(".cu"):
                 self.compile_cuda(source)
 
-        # Compile non-CUDA source files
-        objects = []
+        # Step 2: Compile host code (including PyBind11 bindings) with GCC
+        # Treat .cu file as C++ for host compilation
+        host_objects = []
         for source in ext.sources:
-            if not source.endswith(".cu"):
+            if source.endswith(".cu"):
+                obj = self.compiler.compile(
+                    [source],
+                    output_dir=self.build_temp,
+                    extra_preargs=["-x", "c++"],
+                    extra_postargs=[
+                        "-fPIC",
+                        "-std=c++17",
+                        "-fdiagnostics-color=always",
+                        "-D__CUDACC__",  # Tell the code that CUDA is available
+                    ],
+                )
+                host_objects.extend(obj)
+            else:
                 obj = self.compiler.compile(
                     [source],
                     output_dir=self.build_temp,
@@ -47,11 +61,12 @@ class BuildExt(build_ext):
                         "-fdiagnostics-color=always",
                     ],
                 )
-                objects.extend(obj)
+                host_objects.extend(obj)
 
-        # Link all object files
+        # Link all object files (host + device)
+        all_objects = host_objects + [os.path.join(self.build_temp, "starter_kit.o")]
         self.compiler.link_shared_object(
-            objects + [os.path.join(self.build_temp, "starter_kit.o")],
+            all_objects,
             self.get_ext_fullpath(ext.name),
             libraries=ext.libraries,
             library_dirs=ext.library_dirs,
@@ -103,16 +118,26 @@ class BuildExt(build_ext):
         )
 
     def compile_cuda(self, source):
-        # Compile CUDA source file using NVCC
+        # Compile CUDA device code only using NVCC
         ext = self.extensions[0]
         output_dir = self.build_temp
         os.makedirs(output_dir, exist_ok=True)
-        include_dirs = self.compiler.include_dirs + ext.include_dirs
-        include_dirs = " ".join(f"-I{dir}" for dir in include_dirs)
+        
+        # Only include CUDA-related headers for device compilation
+        cuda_include_dirs = [
+            "/usr/local/cuda/include/",
+            "/usr/include/cuda/",
+            "cccl/cub/",
+            "cccl/libcudacxx/include",
+            "cccl/thrust/",
+        ]
+        # Filter to only existing directories
+        cuda_include_dirs = [d for d in cuda_include_dirs if os.path.exists(d)]
+        cuda_include_dirs_str = " ".join(f"-I{dir}" for dir in cuda_include_dirs)
         output_file = os.path.join(output_dir, "starter_kit.o")
 
         # Let's try inferring the compute capability from the GPU
-        arch_code = "90"
+        arch_code = "75"  # Default to Turing (T4 GPU)
         try:
             import pycuda.driver as cuda
             import pycuda.autoinit
@@ -120,13 +145,16 @@ class BuildExt(build_ext):
             device = cuda.Device(0)  # Get the default device
             major, minor = device.compute_capability()
             arch_code = f"{major}{minor}"
-        except ImportError:
+        except (ImportError, Exception):
             pass
 
+        # Compile device code only with nvcc - add define to skip host-only code
         cmd = (
-            f"nvcc -c {source} -o {output_file} -std=c++17 "
+            f"nvcc -dc {source} -o {output_file} -std=c++17 "
             f"-gencode=arch=compute_{arch_code},code=sm_{arch_code} "
-            f"-Xcompiler -fPIC {include_dirs} -O3 -g"
+            f"--expt-relaxed-constexpr --expt-extended-lambda "
+            f"-D__CUDACC_RELAXED_CONSTEXPR__ -DNVCC_DEVICE_COMPILE "
+            f"-Xcompiler -fPIC,-Wno-psabi {cuda_include_dirs_str} -O3 -g"
         )
         if os.system(cmd) != 0:
             raise RuntimeError(f"nvcc compilation of {source} failed")
