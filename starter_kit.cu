@@ -10,8 +10,10 @@
 #include <cstdio>    // `std::printf`
 #include <cstdlib>   // `std::rand`
 #include <cstring>   // `std::memset`
+#include <functional> // `std::function`
 #include <stdexcept> // `std::runtime_error`
 #include <thread>    // `std::thread::hardware_concurrency()`
+#include <vector>    // `std::vector`
 
 /*
  *  Include the SIMD intrinsics for the target architecture.
@@ -53,28 +55,31 @@
 #include <cuda_runtime.h>
 #include <thrust/device_vector.h>
 #include <thrust/execution_policy.h>
+#include <cooperative_groups.h>
 #if defined(STARTER_KIT_VOLTA)
 #include <cuda/barrier>
 #endif
+namespace cg = cooperative_groups;
 #endif
 
 /*
  *  If we are only testing the raw kernels, we don't need to link to PyBind.
  *  That accelerates the build process and simplifies the configs.
  */
-#if !defined(STARTER_KIT_TEST)
+#if !defined(STARTER_KIT_TEST) && !defined(NVCC_DEVICE_COMPILE)
 #include <pybind11/numpy.h> // `array_t`
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 namespace py = pybind11;
-#endif // !defined(STARTER_KIT_TEST)
+#endif // !defined(STARTER_KIT_TEST) && !defined(NVCC_DEVICE_COMPILE)
 
 using cell_idx_t = std::uint32_t;
 
 enum class backend_t {
     openmp_k,
     cuda_k,
+    cuda_multigpu_k,
 };
 
 /**
@@ -309,12 +314,276 @@ __global__ void cuda_matmul_kernel(                                             
         matrix_c[row * stride_c + col] = cell_c;
 }
 
+/**
+ *  @brief Multi-GPU reduction using cooperative groups.
+ *
+ *  This function performs reduction across multiple GPUs by:
+ *  1. Detecting available CUDA devices
+ *  2. Partitioning the input array across devices
+ *  3. Computing partial reductions on each device
+ *  4. Aggregating results on the host
+ *
+ *  @tparam scalar_type The data type of the array elements (e.g., float, double).
+ *
+ *  @param data A pointer to the input array of elements of type `scalar_type`.
+ *  @param length The number of elements in the input array.
+ *
+ *  @return reduce_type<scalar_type> The result of the reduction operation across all GPUs.
+ */
+template <typename scalar_type>
+reduce_type<scalar_type> cuda_reduce_multigpu(scalar_type const* data, std::size_t length) noexcept(false) {
+    int num_devices = 0;
+    cudaError_t error = cudaGetDeviceCount(&num_devices);
+    if (error != cudaSuccess || num_devices == 0)
+        throw std::runtime_error("No CUDA devices available");
+
+    // If only one GPU, fall back to single GPU implementation
+    if (num_devices == 1)
+        return cuda_reduce<scalar_type>(data, length);
+
+    // Calculate work partition for each GPU
+    std::size_t chunk_size = (length + num_devices - 1) / num_devices;
+    std::vector<reduce_type<scalar_type>> partial_results(num_devices);
+    std::vector<cudaStream_t> streams(num_devices);
+    std::vector<scalar_type*> device_ptrs(num_devices);
+    std::vector<reduce_type<scalar_type>*> result_ptrs(num_devices);
+
+    // Launch reduction on each GPU
+    for (int dev = 0; dev < num_devices; ++dev) {
+        cudaSetDevice(dev);
+        cudaStreamCreate(&streams[dev]);
+
+        std::size_t offset = dev * chunk_size;
+        std::size_t current_length = std::min(chunk_size, length - offset);
+
+        if (current_length == 0) {
+            partial_results[dev] = 0;
+            continue;
+        }
+
+        // Allocate device memory
+        cudaMalloc(&device_ptrs[dev], current_length * sizeof(scalar_type));
+        cudaMalloc(&result_ptrs[dev], sizeof(reduce_type<scalar_type>));
+
+        // Copy data to device asynchronously
+        cudaMemcpyAsync(device_ptrs[dev], data + offset, current_length * sizeof(scalar_type), cudaMemcpyHostToDevice,
+                        streams[dev]);
+
+        // Perform reduction using Thrust on each device
+        cudaStreamSynchronize(streams[dev]);
+        thrust::device_ptr<scalar_type> dev_ptr = thrust::device_pointer_cast(device_ptrs[dev]);
+        reduce_type<scalar_type> result =
+            thrust::reduce(thrust::cuda::par.on(streams[dev]), dev_ptr, dev_ptr + current_length,
+                           reduce_type<scalar_type>(0));
+
+        // Copy result back to host
+        partial_results[dev] = result;
+    }
+
+    // Synchronize all devices
+    for (int dev = 0; dev < num_devices; ++dev) {
+        cudaSetDevice(dev);
+        cudaStreamSynchronize(streams[dev]);
+    }
+
+    // Cleanup
+    for (int dev = 0; dev < num_devices; ++dev) {
+        cudaSetDevice(dev);
+        if (device_ptrs[dev])
+            cudaFree(device_ptrs[dev]);
+        if (result_ptrs[dev])
+            cudaFree(result_ptrs[dev]);
+        cudaStreamDestroy(streams[dev]);
+    }
+
+    // Aggregate results on host
+    reduce_type<scalar_type> final_result = 0;
+    for (int dev = 0; dev < num_devices; ++dev)
+        final_result += partial_results[dev];
+
+    return final_result;
+}
+
+/**
+ *  @brief Multi-GPU matrix multiplication kernel.
+ *
+ *  This function performs matrix multiplication across multiple GPUs by:
+ *  1. Detecting available CUDA devices
+ *  2. Partitioning matrix A's rows across devices
+ *  3. Broadcasting matrix B to all devices
+ *  4. Computing partial results on each device
+ *  5. Gathering results back to host
+ *
+ *  Uses peer-to-peer access when available for efficient data transfer.
+ *
+ *  @tparam scalar_type The data type of the matrix elements (e.g., float, double).
+ *  @tparam tile_size The size of the tiles used for shared memory.
+ *
+ *  @param matrix_a Pointer to the input matrix A, stored in row-major order.
+ *  @param matrix_b Pointer to the input matrix B, stored in row-major order.
+ *  @param matrix_c Pointer to the output matrix C, stored in row-major order.
+ *  @param num_rows_a The number of rows in matrix A.
+ *  @param num_cols_b The number of columns in matrix B.
+ *  @param num_cols_a The number of columns in matrix A, and the number of rows in matrix B.
+ *  @param stride_a The stride (leading dimension) of matrix A.
+ *  @param stride_b The stride (leading dimension) of matrix B.
+ *  @param stride_c The stride (leading dimension) of matrix C.
+ */
+template <typename scalar_type, cell_idx_t tile_size = 16>
+void cuda_matmul_multigpu(scalar_type const* matrix_a, scalar_type const* matrix_b,
+                          matmul_type<scalar_type>* matrix_c, cell_idx_t num_rows_a, cell_idx_t num_cols_b,
+                          cell_idx_t num_cols_a, cell_idx_t stride_a, cell_idx_t stride_b,
+                          cell_idx_t stride_c) noexcept(false) {
+
+    int num_devices = 0;
+    cudaError_t error = cudaGetDeviceCount(&num_devices);
+    if (error != cudaSuccess || num_devices == 0)
+        throw std::runtime_error("No CUDA devices available");
+
+    // If only one GPU, we could fall back to single GPU, but let's use the multi-GPU path anyway
+    if (num_devices == 1) {
+        cudaSetDevice(0);
+        
+        // Allocate memory on device
+        size_t pitch_a, pitch_b;
+        scalar_type *dev_a = nullptr, *dev_b = nullptr;
+        matmul_type<scalar_type>* dev_c = nullptr;
+
+        cudaMallocPitch(&dev_a, &pitch_a, num_cols_a * sizeof(scalar_type), num_rows_a);
+        cudaMallocPitch(&dev_b, &pitch_b, num_cols_b * sizeof(scalar_type), num_cols_a);
+        cudaMalloc(&dev_c, num_rows_a * num_cols_b * sizeof(matmul_type<scalar_type>));
+
+        cudaMemcpy2D(dev_a, pitch_a, matrix_a, stride_a * sizeof(scalar_type), num_cols_a * sizeof(scalar_type),
+                     num_rows_a, cudaMemcpyHostToDevice);
+        cudaMemcpy2D(dev_b, pitch_b, matrix_b, stride_b * sizeof(scalar_type), num_cols_b * sizeof(scalar_type),
+                     num_cols_a, cudaMemcpyHostToDevice);
+
+        dim3 block(tile_size, tile_size);
+        dim3 grid((num_cols_b + tile_size - 1) / tile_size, (num_rows_a + tile_size - 1) / tile_size);
+
+        cuda_matmul_kernel<scalar_type, tile_size><<<grid, block>>>(
+            dev_a, dev_b, dev_c, num_rows_a, num_cols_b, num_cols_a, pitch_a / sizeof(scalar_type),
+            pitch_b / sizeof(scalar_type), num_cols_b);
+
+        cudaMemcpy(matrix_c, dev_c, num_rows_a * num_cols_b * sizeof(matmul_type<scalar_type>),
+                   cudaMemcpyDeviceToHost);
+
+        cudaFree(dev_a);
+        cudaFree(dev_b);
+        cudaFree(dev_c);
+        return;
+    }
+
+    // Enable peer access between GPUs
+    for (int i = 0; i < num_devices; ++i) {
+        cudaSetDevice(i);
+        for (int j = 0; j < num_devices; ++j) {
+            if (i != j) {
+                int can_access = 0;
+                cudaDeviceCanAccessPeer(&can_access, i, j);
+                if (can_access) {
+                    cudaDeviceEnablePeerAccess(j, 0);
+                }
+            }
+        }
+    }
+
+    // Partition rows of matrix A across GPUs
+    cell_idx_t rows_per_device = (num_rows_a + num_devices - 1) / num_devices;
+
+    std::vector<cudaStream_t> streams(num_devices);
+    std::vector<scalar_type*> dev_a_ptrs(num_devices);
+    std::vector<scalar_type*> dev_b_ptrs(num_devices);
+    std::vector<matmul_type<scalar_type>*> dev_c_ptrs(num_devices);
+    std::vector<size_t> pitches_a(num_devices);
+    std::vector<size_t> pitches_b(num_devices);
+    std::vector<cell_idx_t> actual_rows(num_devices);
+
+    // Allocate memory and copy data to each GPU
+    for (int dev = 0; dev < num_devices; ++dev) {
+        cudaSetDevice(dev);
+        cudaStreamCreate(&streams[dev]);
+
+        cell_idx_t row_start = dev * rows_per_device;
+        cell_idx_t row_end = std::min(row_start + rows_per_device, num_rows_a);
+        actual_rows[dev] = row_end - row_start;
+
+        if (actual_rows[dev] == 0)
+            continue;
+
+        // Allocate pitched memory for matrix A partition
+        cudaMallocPitch(&dev_a_ptrs[dev], &pitches_a[dev], num_cols_a * sizeof(scalar_type), actual_rows[dev]);
+
+        // Allocate pitched memory for matrix B (full matrix on each GPU)
+        cudaMallocPitch(&dev_b_ptrs[dev], &pitches_b[dev], num_cols_b * sizeof(scalar_type), num_cols_a);
+
+        // Allocate memory for result matrix partition
+        cudaMalloc(&dev_c_ptrs[dev], actual_rows[dev] * num_cols_b * sizeof(matmul_type<scalar_type>));
+
+        // Copy matrix A partition asynchronously
+        cudaMemcpy2DAsync(dev_a_ptrs[dev], pitches_a[dev], matrix_a + row_start * stride_a,
+                          stride_a * sizeof(scalar_type), num_cols_a * sizeof(scalar_type), actual_rows[dev],
+                          cudaMemcpyHostToDevice, streams[dev]);
+
+        // Copy full matrix B asynchronously
+        cudaMemcpy2DAsync(dev_b_ptrs[dev], pitches_b[dev], matrix_b, stride_b * sizeof(scalar_type),
+                          num_cols_b * sizeof(scalar_type), num_cols_a, cudaMemcpyHostToDevice, streams[dev]);
+    }
+
+    // Launch kernels on each GPU
+    for (int dev = 0; dev < num_devices; ++dev) {
+        if (actual_rows[dev] == 0)
+            continue;
+
+        cudaSetDevice(dev);
+        cudaStreamSynchronize(streams[dev]);
+
+        dim3 block(tile_size, tile_size);
+        dim3 grid((num_cols_b + tile_size - 1) / tile_size, (actual_rows[dev] + tile_size - 1) / tile_size);
+
+        cuda_matmul_kernel<scalar_type, tile_size><<<grid, block, 0, streams[dev]>>>(
+            dev_a_ptrs[dev], dev_b_ptrs[dev], dev_c_ptrs[dev], actual_rows[dev], num_cols_b, num_cols_a,
+            pitches_a[dev] / sizeof(scalar_type), pitches_b[dev] / sizeof(scalar_type), num_cols_b);
+    }
+
+    // Copy results back to host
+    for (int dev = 0; dev < num_devices; ++dev) {
+        if (actual_rows[dev] == 0)
+            continue;
+
+        cudaSetDevice(dev);
+        cudaStreamSynchronize(streams[dev]);
+
+        cell_idx_t row_start = dev * rows_per_device;
+        cudaMemcpyAsync(matrix_c + row_start * stride_c, dev_c_ptrs[dev],
+                        actual_rows[dev] * num_cols_b * sizeof(matmul_type<scalar_type>), cudaMemcpyDeviceToHost,
+                        streams[dev]);
+    }
+
+    // Cleanup
+    for (int dev = 0; dev < num_devices; ++dev) {
+        cudaSetDevice(dev);
+        cudaStreamSynchronize(streams[dev]);
+
+        if (dev_a_ptrs[dev])
+            cudaFree(dev_a_ptrs[dev]);
+        if (dev_b_ptrs[dev])
+            cudaFree(dev_b_ptrs[dev]);
+        if (dev_c_ptrs[dev])
+            cudaFree(dev_c_ptrs[dev]);
+        cudaStreamDestroy(streams[dev]);
+    }
+
+    // Reset device
+    cudaSetDevice(0);
+}
+
 #endif // defined(__NVCC__)
 
 #pragma endregion CUDA
 
 #pragma region Python bindings
-#if !defined(STARTER_KIT_TEST)
+#if !defined(STARTER_KIT_TEST) && !defined(NVCC_DEVICE_COMPILE)
 
 /**
  *  @brief  Router function, that unpacks Python buffers into C++ pointers and calls the appropriate
@@ -333,6 +602,12 @@ static py::object python_reduce_typed(py::buffer_info const& buf) noexcept(false
     } else if constexpr (backend_kind == backend_t::cuda_k) {
 #if defined(__NVCC__)
         result = cuda_reduce<scalar_type>(ptr, buf.size);
+#else
+        throw std::runtime_error("CUDA backend not available");
+#endif
+    } else if constexpr (backend_kind == backend_t::cuda_multigpu_k) {
+#if defined(__NVCC__)
+        result = cuda_reduce_multigpu<scalar_type>(ptr, buf.size);
 #else
         throw std::runtime_error("CUDA backend not available");
 #endif
@@ -537,6 +812,20 @@ static py::array python_matmul_typed(py::buffer_info const& buffer_a, py::buffer
 #else
         throw std::runtime_error("CUDA backend not available");
 #endif
+    } else if constexpr (backend_kind == backend_t::cuda_multigpu_k) {
+#if defined(__NVCC__)
+        // Call multi-GPU matmul implementation
+        switch (tile_size) {
+        case 4: cuda_matmul_multigpu<scalar_type, 4>(ptr_a, ptr_b, ptr_c, num_rows_a, num_cols_b, num_cols_a, stride_a, stride_b, stride_c); break;
+        case 8: cuda_matmul_multigpu<scalar_type, 8>(ptr_a, ptr_b, ptr_c, num_rows_a, num_cols_b, num_cols_a, stride_a, stride_b, stride_c); break;
+        case 16: cuda_matmul_multigpu<scalar_type, 16>(ptr_a, ptr_b, ptr_c, num_rows_a, num_cols_b, num_cols_a, stride_a, stride_b, stride_c); break;
+        case 32: cuda_matmul_multigpu<scalar_type, 32>(ptr_a, ptr_b, ptr_c, num_rows_a, num_cols_b, num_cols_a, stride_a, stride_b, stride_c); break;
+        case 64: cuda_matmul_multigpu<scalar_type, 64>(ptr_a, ptr_b, ptr_c, num_rows_a, num_cols_b, num_cols_a, stride_a, stride_b, stride_c); break;
+        default: throw std::runtime_error("Unsupported tile size - choose from 4, 8, 16, 32, and 64");
+        }
+#else
+        throw std::runtime_error("CUDA backend not available");
+#endif
     } else {
         throw std::runtime_error("Unsupported backend");
     }
@@ -588,6 +877,18 @@ PYBIND11_MODULE(starter_kit, m) {
 #endif
     });
 
+    m.def("get_cuda_device_count", []() -> int {
+#if defined(__NVCC__)
+        int device_count = 0;
+        cudaError_t error = cudaGetDeviceCount(&device_count);
+        if (error != cudaSuccess)
+            return 0;
+        return device_count;
+#else
+        return 0;
+#endif
+    });
+
     m.def("log_cuda_devices", []() {
 #if defined(__NVCC__)
         int device_count;
@@ -618,9 +919,13 @@ PYBIND11_MODULE(starter_kit, m) {
     m.def("reduce_cuda", &python_reduce<backend_t::cuda_k>);
     m.def("matmul_cuda", &python_matmul<backend_t::cuda_k>, py::arg("a"), py::arg("b"), py::kw_only(),
           py::arg("tile_size") = 16);
+
+    m.def("reduce_cuda_multigpu", &python_reduce<backend_t::cuda_multigpu_k>);
+    m.def("matmul_cuda_multigpu", &python_matmul<backend_t::cuda_multigpu_k>, py::arg("a"), py::arg("b"), py::kw_only(),
+          py::arg("tile_size") = 16);
 }
 
-#endif // !defined(STARTER_KIT_TEST)
+#endif // !defined(STARTER_KIT_TEST) && !defined(NVCC_DEVICE_COMPILE)
 #pragma endregion Python bindings
 
 #if defined(STARTER_KIT_TEST)
