@@ -15,7 +15,16 @@ import numpy as np
 import pytest
 
 from starter_kit_baseline import reduce as reduce_baseline, matmul as matmul_baseline
-from starter_kit import reduce_openmp, reduce_cuda, matmul_openmp, matmul_cuda, supports_cuda
+from starter_kit import (
+    reduce_openmp,
+    reduce_cuda,
+    reduce_cuda_multigpu,
+    matmul_openmp,
+    matmul_cuda,
+    matmul_cuda_multigpu,
+    supports_cuda,
+    get_cuda_device_count,
+)
 
 # Build lists of (name, kernel_function) for reduction and matrix multiplication.
 REDUCTION_KERNELS = [
@@ -24,6 +33,8 @@ REDUCTION_KERNELS = [
 ]
 if supports_cuda():
     REDUCTION_KERNELS.append(("cuda", reduce_cuda))
+if get_cuda_device_count() > 1:
+    REDUCTION_KERNELS.append(("cuda_multigpu", reduce_cuda_multigpu))
 
 MATMUL_KERNELS = [
     ("baseline", matmul_baseline),
@@ -31,6 +42,8 @@ MATMUL_KERNELS = [
 ]
 if supports_cuda():
     MATMUL_KERNELS.append(("cuda", matmul_cuda))
+if get_cuda_device_count() > 1:
+    MATMUL_KERNELS.append(("cuda_multigpu", matmul_cuda_multigpu))
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.int32])
