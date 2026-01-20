@@ -119,6 +119,7 @@ class BuildExt(build_ext):
 
     def compile_cuda(self, source):
         # Compile CUDA device code only using NVCC
+        import subprocess
         ext = self.extensions[0]
         output_dir = self.build_temp
         os.makedirs(output_dir, exist_ok=True)
@@ -133,6 +134,14 @@ class BuildExt(build_ext):
         ]
         # Filter to only existing directories
         cuda_include_dirs = [d for d in cuda_include_dirs if os.path.exists(d)]
+        print(f"\n{'='*70}")
+        print(f"CUDA Include Directories Found:")
+        for d in cuda_include_dirs:
+            print(f"  - {d}")
+        if not cuda_include_dirs:
+            print("  ⚠ WARNING: No CUDA include directories found!")
+        print(f"{'='*70}\n")
+        
         cuda_include_dirs_str = " ".join(f"-I{dir}" for dir in cuda_include_dirs)
         output_file = os.path.join(output_dir, "starter_kit.o")
 
@@ -145,8 +154,9 @@ class BuildExt(build_ext):
             device = cuda.Device(0)  # Get the default device
             major, minor = device.compute_capability()
             arch_code = f"{major}{minor}"
-        except (ImportError, Exception):
-            pass
+            print(f"Detected GPU Compute Capability: {arch_code}")
+        except (ImportError, Exception) as e:
+            print(f"Could not detect GPU, using default arch {arch_code}: {e}")
 
         # Compile device code only with nvcc - add define to skip host-only code
         cmd = (
@@ -156,8 +166,30 @@ class BuildExt(build_ext):
             f"-D__CUDACC_RELAXED_CONSTEXPR__ -DNVCC_DEVICE_COMPILE "
             f"-Xcompiler -fPIC,-Wno-psabi {cuda_include_dirs_str} -O3 -g"
         )
-        if os.system(cmd) != 0:
-            raise RuntimeError(f"nvcc compilation of {source} failed")
+        
+        print(f"\n{'='*70}")
+        print(f"NVCC Command:")
+        print(f"{cmd}")
+        print(f"{'='*70}\n")
+        
+        # Use subprocess to capture output
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"\n{'='*70}")
+            print(f"NVCC COMPILATION FAILED!")
+            print(f"{'='*70}")
+            print(f"STDOUT:\n{result.stdout}")
+            print(f"{'='*70}")
+            print(f"STDERR:\n{result.stderr}")
+            print(f"{'='*70}\n")
+            raise RuntimeError(f"nvcc compilation of {source} failed with exit code {result.returncode}")
+        else:
+            print(f"- NVCC compilation successful")
+            if result.stdout:
+                print(f"STDOUT: {result.stdout}")
+            if result.stderr:
+                print(f"STDERR: {result.stderr}")
 
 
 __version__ = open("VERSION", "r").read().strip()
