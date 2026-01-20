@@ -11,10 +11,12 @@ This project provides a pre-configured environment for such workflows...:
 3. including [CCCL](https://github.com/NVIDIA/cccl) libraries, like Thrust, and CUB, to simplify the code.
 
 As an example, the repository implements, tests, and benchmarks only 2 operations - array accumulation and matrix multiplication.
-The baseline Python + Numba implementations are placed in `starter_kit_baseline.py`, and the optimized CUDA nd OpenMP implementations are placed in `starter_kit.cu`.
+The baseline Python + Numba implementations are placed in `starter_kit_baseline.py`, and the optimized CUDA and OpenMP implementations are placed in `starter_kit.cu`.
 If no CUDA-capable device is found, the file will be treated as a CPU-only C++ implementation.
 If VSCode is used, the `tasks.json` file is configured with debuggers for both CPU and GPU code, both in Python and C++.
 The `.clang-format` is configured with LLVM base style, adjusted for wider screens, allowing 120 characters per line.
+
+**Multi-GPU Support**: The repository now includes multi-GPU implementations for both reduction and matrix multiplication operations, utilizing CUDA cooperative groups and efficient device partitioning strategies.
 
 ## Installation
 
@@ -50,6 +52,35 @@ The project is designed to be as simple as possible, with the following workflow
 1. Fork or download the repository.
 2. Implement your baseline algorithm in `starter_kit_baseline.py`.
 3. Implement your optimized algorithm in `starter_kit.cu`.
+
+## Multi-GPU Features
+
+The starter kit now includes multi-GPU implementations:
+
+- **Multi-GPU Reduction**: Partitions data across available GPUs, performs parallel reductions, and aggregates results
+- **Multi-GPU Matrix Multiplication**: Distributes matrix rows across GPUs using row-wise partitioning with peer-to-peer access when available
+- **Automatic Detection**: Falls back to single-GPU or CPU when multiple GPUs are not available
+- **Cooperative Groups**: Uses CUDA cooperative groups for efficient inter-block synchronization
+- **Tested & Benchmarked**: Comprehensive test suite and performance benchmarks included
+
+Usage:
+```python
+import numpy as np
+from starter_kit import reduce_cuda_multigpu, matmul_cuda_multigpu, get_cuda_device_count
+
+# Check available GPUs
+num_gpus = get_cuda_device_count()
+print(f"Available GPUs: {num_gpus}")
+
+# Multi-GPU reduction
+data = np.random.rand(1_000_000).astype(np.float32)
+result = reduce_cuda_multigpu(data)
+
+# Multi-GPU matrix multiplication
+a = np.random.rand(1024, 1024).astype(np.float32)
+b = np.random.rand(1024, 1024).astype(np.float32)
+c = matmul_cuda_multigpu(a, b, tile_size=16)
+```
 
 ## Reading Materials
 
