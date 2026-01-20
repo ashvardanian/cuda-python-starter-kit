@@ -42,6 +42,7 @@ class BuildExt(build_ext):
                 obj = self.compiler.compile(
                     [source],
                     output_dir=self.build_temp,
+                    include_dirs=ext.include_dirs,
                     extra_preargs=["-x", "c++"],
                     extra_postargs=[
                         "-fPIC",
@@ -55,6 +56,7 @@ class BuildExt(build_ext):
                 obj = self.compiler.compile(
                     [source],
                     output_dir=self.build_temp,
+                    include_dirs=ext.include_dirs,
                     extra_postargs=[
                         "-fPIC",
                         "-std=c++17",
