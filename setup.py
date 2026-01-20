@@ -29,30 +29,17 @@ class BuildExt(build_ext):
                 super().build_extension(ext)
 
     def build_cuda_extension(self, ext):
-        # Step 1: Compile CUDA kernels with NVCC (device code only)
+        # Compile everything with NVCC (both device and host code)
+        cuda_objects = []
+        other_objects = []
+        
         for source in ext.sources:
             if source.endswith(".cu"):
+                # Use NVCC to compile everything (device + host code)
                 self.compile_cuda(source)
-
-        # Step 2: Compile host code (including PyBind11 bindings) with GCC
-        # Treat .cu file as C++ for host compilation
-        host_objects = []
-        for source in ext.sources:
-            if source.endswith(".cu"):
-                obj = self.compiler.compile(
-                    [source],
-                    output_dir=self.build_temp,
-                    include_dirs=ext.include_dirs,
-                    extra_preargs=["-x", "c++"],
-                    extra_postargs=[
-                        "-fPIC",
-                        "-std=c++17",
-                        "-fdiagnostics-color=always",
-                        "-D__CUDACC__",  # Tell the code that CUDA is available
-                    ],
-                )
-                host_objects.extend(obj)
+                cuda_objects.append(os.path.join(self.build_temp, "starter_kit.o"))
             else:
+                # Compile non-CUDA files with GCC
                 obj = self.compiler.compile(
                     [source],
                     output_dir=self.build_temp,
@@ -63,10 +50,10 @@ class BuildExt(build_ext):
                         "-fdiagnostics-color=always",
                     ],
                 )
-                host_objects.extend(obj)
+                other_objects.extend(obj)
 
-        # Link all object files (host + device)
-        all_objects = host_objects + [os.path.join(self.build_temp, "starter_kit.o")]
+        # Link all object files
+        all_objects = cuda_objects + other_objects
         self.compiler.link_shared_object(
             all_objects,
             self.get_ext_fullpath(ext.name),
@@ -160,12 +147,12 @@ class BuildExt(build_ext):
         except (ImportError, Exception) as e:
             print(f"Could not detect GPU, using default arch {arch_code}: {e}")
 
-        # Compile device code only with nvcc - add define to skip host-only code
+        # Compile both device and host code with nvcc (no -dc flag)
         cmd = (
-            f"nvcc -dc {source} -o {output_file} -std=c++17 "
+            f"nvcc -c {source} -o {output_file} -std=c++17 "
             f"-gencode=arch=compute_{arch_code},code=sm_{arch_code} "
             f"--expt-relaxed-constexpr --expt-extended-lambda "
-            f"-D__CUDACC_RELAXED_CONSTEXPR__ -DNVCC_DEVICE_COMPILE "
+            f"-D__CUDACC_RELAXED_CONSTEXPR__ "
             f"-Xcompiler -fPIC,-Wno-psabi {cuda_include_dirs_str} -O3 -g"
         )
         
@@ -227,7 +214,7 @@ ext_modules = [
         ],
         #
         libraries=[python_lib_name.replace(".a", "")]
-        + (["cudart", "cuda", "cublas"] if enable_cuda else [])
+        + (["cudart", "cublas"] if enable_cuda else [])
         + (["gomp"] if enable_openmp else []),
         #
         extra_link_args=[f"-Wl,-rpath,{python_lib_dir}"]
