@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=42", "wheel", "pybind11", "numpy"]
+requires = ["setuptools>=42", "wheel", "pybind11>=2.10,<2.13", "numpy"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -13,7 +13,7 @@ authors = [
     { name = "Ash Vardanian", email = "1983160+ashvardanian@users.noreply.github.com" },
 ]
 urls = { Homepage = "https://github.com/ashvardanian/PyBindToGPUs" }
-dependencies = ["pybind11", "numpy", "numba"]
+dependencies = ["pybind11>=2.10,<2.13", "numpy", "numba"]
 
 [project.optional-dependencies]
 cpu = ["pytest", "pytest-repeat", "pytest-benchmark"]
