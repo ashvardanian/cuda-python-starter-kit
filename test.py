@@ -19,9 +19,20 @@ import pytest
 import numpy as np
 
 from starter_kit_baseline import matmul as matmul_baseline, reduce as reduce_baseline
-from starter_kit import supports_cuda, reduce_openmp, reduce_cuda, matmul_openmp, matmul_cuda
+from starter_kit import (
+    supports_cuda,
+    get_cuda_device_count,
+    reduce_openmp,
+    reduce_cuda,
+    reduce_cuda_multigpu,
+    matmul_openmp,
+    matmul_cuda,
+    matmul_cuda_multigpu,
+)
 
 backends = ["openmp", "cuda"] if supports_cuda() else ["openmp"]
+multigpu_backends = ["cuda_multigpu"] if get_cuda_device_count() > 1 else []
+all_backends = backends + multigpu_backends
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int64, np.uint64])
 @pytest.mark.parametrize("backend", backends)
@@ -51,6 +62,41 @@ def test_reduce(dtype, backend):
         result = reduce_openmp(data)
     elif backend == "cuda":
         result = reduce_cuda(data)
+
+    # Compare the results
+    np.testing.assert_allclose(result, expected_result, rtol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int64, np.uint64])
+@pytest.mark.parametrize("size", [1024, 8192, 65536])
+@pytest.mark.parametrize("backend", multigpu_backends)
+def test_reduce_multigpu(dtype, size, backend):
+    """
+    Test the multi-GPU reduction operation for different data types and sizes.
+
+    This test verifies that multi-GPU reduction produces the same results
+    as the baseline implementation for various data sizes.
+
+    Parameters:
+        dtype (np.dtype): The data type for the array elements.
+        size (int): The size of the array to reduce.
+        backend (str): The backend to test ('cuda_multigpu').
+
+    Raises:
+        AssertionError: If the results differ by more than the acceptable tolerance.
+    """
+    if not multigpu_backends:
+        pytest.skip("Multi-GPU not available (requires 2+ GPUs)")
+
+    # Generate random data
+    data = (np.random.rand(size) * 100).astype(dtype)
+
+    # Get the expected result from the baseline implementation
+    expected_result = reduce_baseline(data)
+
+    # Get the result from the multi-GPU implementation
+    if backend == "cuda_multigpu":
+        result = reduce_cuda_multigpu(data)
 
     # Compare the results
     np.testing.assert_allclose(result, expected_result, rtol=1e-2)
@@ -88,6 +134,44 @@ def test_matmul(dtype, tile_size, backend):
         result = matmul_openmp(a, b, tile_size=tile_size)
     elif backend == "cuda":
         result = matmul_cuda(a, b, tile_size=tile_size)
+
+    # Compare the results
+    np.testing.assert_allclose(result, expected_result, rtol=1e-2)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int64, np.uint64])
+@pytest.mark.parametrize("size", [128, 256, 512])
+@pytest.mark.parametrize("tile_size", [8, 16, 32])
+@pytest.mark.parametrize("backend", multigpu_backends)
+def test_matmul_multigpu(dtype, size, tile_size, backend):
+    """
+    Test the multi-GPU matrix multiplication operation for different sizes and tile sizes.
+
+    This test verifies that multi-GPU matrix multiplication produces the same results
+    as the baseline implementation for various matrix sizes.
+
+    Parameters:
+        dtype (np.dtype): The data type for the matrix elements.
+        size (int): The dimension of the square matrices.
+        tile_size (int): The tile size to be used for the multiplication kernel.
+        backend (str): The backend to test ('cuda_multigpu').
+
+    Raises:
+        AssertionError: If the output matrices differ by more than the acceptable tolerance.
+    """
+    if not multigpu_backends:
+        pytest.skip("Multi-GPU not available (requires 2+ GPUs)")
+
+    # Generate random matrices
+    a = (np.random.rand(size, size) * 100).astype(dtype)
+    b = (np.random.rand(size, size) * 100).astype(dtype)
+
+    # Get the expected result from the baseline implementation
+    expected_result = matmul_baseline(a, b)
+
+    # Get the result from the multi-GPU implementation
+    if backend == "cuda_multigpu":
+        result = matmul_cuda_multigpu(a, b, tile_size=tile_size)
 
     # Compare the results
     np.testing.assert_allclose(result, expected_result, rtol=1e-2)

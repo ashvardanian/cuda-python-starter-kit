@@ -29,29 +29,33 @@ class BuildExt(build_ext):
                 super().build_extension(ext)
 
     def build_cuda_extension(self, ext):
-        # Compile CUDA source files
+        # Compile everything with NVCC (both device and host code)
+        cuda_objects = []
+        other_objects = []
+        
         for source in ext.sources:
             if source.endswith(".cu"):
+                # Use NVCC to compile everything (device + host code)
                 self.compile_cuda(source)
-
-        # Compile non-CUDA source files
-        objects = []
-        for source in ext.sources:
-            if not source.endswith(".cu"):
+                cuda_objects.append(os.path.join(self.build_temp, "starter_kit.o"))
+            else:
+                # Compile non-CUDA files with GCC
                 obj = self.compiler.compile(
                     [source],
                     output_dir=self.build_temp,
+                    include_dirs=ext.include_dirs,
                     extra_postargs=[
                         "-fPIC",
                         "-std=c++17",
                         "-fdiagnostics-color=always",
                     ],
                 )
-                objects.extend(obj)
+                other_objects.extend(obj)
 
         # Link all object files
+        all_objects = cuda_objects + other_objects
         self.compiler.link_shared_object(
-            objects + [os.path.join(self.build_temp, "starter_kit.o")],
+            all_objects,
             self.get_ext_fullpath(ext.name),
             libraries=ext.libraries,
             library_dirs=ext.library_dirs,
@@ -103,16 +107,28 @@ class BuildExt(build_ext):
         )
 
     def compile_cuda(self, source):
-        # Compile CUDA source file using NVCC
+        # Compile CUDA device code only using NVCC
+        import subprocess
         ext = self.extensions[0]
         output_dir = self.build_temp
         os.makedirs(output_dir, exist_ok=True)
-        include_dirs = self.compiler.include_dirs + ext.include_dirs
-        include_dirs = " ".join(f"-I{dir}" for dir in include_dirs)
+        
+        # Include all directories: CUDA headers, PyBind11, NumPy, Python, CCCL
+        # Filter to only existing directories
+        include_dirs = [d for d in ext.include_dirs if os.path.exists(d)]
+        print(f"\n{'='*70}")
+        print(f"Include Directories for NVCC:")
+        for d in include_dirs:
+            print(f"  - {d}")
+        if not include_dirs:
+            print("  * WARNING: No include directories found!")
+        print(f"{'='*70}\n")
+        
+        cuda_include_dirs_str = " ".join(f"-I{dir}" for dir in include_dirs)
         output_file = os.path.join(output_dir, "starter_kit.o")
 
         # Let's try inferring the compute capability from the GPU
-        arch_code = "90"
+        arch_code = "75"  # Default to Turing (T4 GPU)
         try:
             import pycuda.driver as cuda
             import pycuda.autoinit
@@ -120,16 +136,42 @@ class BuildExt(build_ext):
             device = cuda.Device(0)  # Get the default device
             major, minor = device.compute_capability()
             arch_code = f"{major}{minor}"
-        except ImportError:
-            pass
+            print(f"Detected GPU Compute Capability: {arch_code}")
+        except (ImportError, Exception) as e:
+            print(f"Could not detect GPU, using default arch {arch_code}: {e}")
 
+        # Compile both device and host code with nvcc (no -dc flag)
         cmd = (
             f"nvcc -c {source} -o {output_file} -std=c++17 "
             f"-gencode=arch=compute_{arch_code},code=sm_{arch_code} "
-            f"-Xcompiler -fPIC {include_dirs} -O3 -g"
+            f"--expt-relaxed-constexpr --expt-extended-lambda "
+            f"-D__CUDACC_RELAXED_CONSTEXPR__ "
+            f"-Xcompiler -fPIC,-Wno-psabi {cuda_include_dirs_str} -O3 -g"
         )
-        if os.system(cmd) != 0:
-            raise RuntimeError(f"nvcc compilation of {source} failed")
+        
+        print(f"\n{'='*70}")
+        print(f"NVCC Command:")
+        print(f"{cmd}")
+        print(f"{'='*70}\n")
+        
+        # Use subprocess to capture output
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"\n{'='*70}")
+            print(f"NVCC COMPILATION FAILED!")
+            print(f"{'='*70}")
+            print(f"STDOUT:\n{result.stdout}")
+            print(f"{'='*70}")
+            print(f"STDERR:\n{result.stderr}")
+            print(f"{'='*70}\n")
+            raise RuntimeError(f"nvcc compilation of {source} failed with exit code {result.returncode}")
+        else:
+            print(f"- NVCC compilation successful")
+            if result.stdout:
+                print(f"STDOUT: {result.stdout}")
+            if result.stderr:
+                print(f"STDERR: {result.stderr}")
 
 
 __version__ = open("VERSION", "r").read().strip()
@@ -165,7 +207,7 @@ ext_modules = [
         ],
         #
         libraries=[python_lib_name.replace(".a", "")]
-        + (["cudart", "cuda", "cublas"] if enable_cuda else [])
+        + (["cudart", "cublas"] if enable_cuda else [])
         + (["gomp"] if enable_openmp else []),
         #
         extra_link_args=[f"-Wl,-rpath,{python_lib_dir}"]
